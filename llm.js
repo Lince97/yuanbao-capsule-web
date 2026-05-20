@@ -289,7 +289,19 @@ const LLM = (() => {
       return { text, provider: 'byok' };
     }
 
-    // 3) 默认 auto：先试 server 端代理；503 就降级 mock；其他错误抛出
+    // 3) 默认 auto：
+    //    - 如果在纯静态托管（GitHub Pages / *.github.io）上，直接走 mock，避免请求不存在的 /api/chat
+    //    - 否则先试 server 端代理；503 就降级 mock；其他错误抛出
+    const host = (typeof location !== 'undefined' && location.hostname) || '';
+    const isStaticOnlyHost = /\.github\.io$/i.test(host);
+    if (isStaticOnlyHost) {
+      await new Promise(r => setTimeout(r, 200));
+      return {
+        text: mockComplete(messages, mode),
+        provider: 'mock',
+        notice: '当前是静态演示版（mock）。要体验真模型，请点右上角「设置」填入你自己的 LLM key。',
+      };
+    }
     try {
       const text = await serverComplete(messages);
       return { text, provider: 'server' };
