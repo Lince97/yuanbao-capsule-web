@@ -134,7 +134,8 @@ const ASR = (() => {
 const ASR_ROUTER = (() => {
   const ENGINE_KEY = 'capsule_asr_engine_v1';
   function getEngine() {
-    return localStorage.getItem(ENGINE_KEY) || 'webspeech';
+    // 默认走 Whisper（开源模型，浏览器本地推理，跨浏览器一致）；老用户可手动切回 webspeech
+    return localStorage.getItem(ENGINE_KEY) || 'whisper';
   }
   function setEngine(name) {
     localStorage.setItem(ENGINE_KEY, name);

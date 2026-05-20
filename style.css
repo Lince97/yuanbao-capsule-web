@@ -220,6 +220,61 @@ body {
 }
 .asr-hint.warn { color: var(--warn); }
 
+/* Boot loader：首次访问时显示模型下载进度 */
+.boot-loader {
+  width: 100%;
+  max-width: 480px;
+  margin: 8px auto 0;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+  text-align: center;
+}
+.boot-loader.hide { display: none; }
+.boot-title {
+  font-size: 13px;
+  color: var(--accent-deep);
+  margin-bottom: 10px;
+}
+.boot-bar {
+  width: 100%;
+  height: 8px;
+  background: rgba(31,169,112,0.12);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.boot-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #1FA970, #4cc28d);
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+.boot-meta {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 8px;
+  font-variant-numeric: tabular-nums;
+}
+.boot-tip {
+  font-size: 11px;
+  color: var(--text-mute);
+  margin-top: 6px;
+  line-height: 1.5;
+}
+.boot-loader.error {
+  background: rgba(220, 70, 70, 0.06);
+  border-color: rgba(220, 70, 70, 0.3);
+}
+.boot-loader.error .boot-title { color: #c0392b; }
+
+/* 麦克风禁用态 */
+.mic-btn[disabled] {
+  opacity: 0.55;
+  cursor: not-allowed;
+  filter: grayscale(0.3);
+}
+
 .partial-box {
   width: 100%;
   min-height: 28px;

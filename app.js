@@ -29,39 +29,103 @@
   const FIXED_MODE = 'auto';
 
   let isRecording = false;
+  let asrReady = false;
 
-  // ===== 启动检查 =====
-  function refreshAsrHint() {
-    const engine = ASR_ROUTER.getEngine();
-    if (engine === 'whisper') {
-      const status = ASR_WHISPER.getStatus();
-      if (!ASR_WHISPER.isSupported()) {
-        asrHint.innerHTML = '⚠️ 当前浏览器不支持 MediaRecorder，无法用 Whisper 引擎。已自动回退 Web Speech。';
-        asrHint.classList.add('warn');
-        ASR_ROUTER.setEngine('webspeech');
-        return refreshAsrHint();
-      }
-      if (status.modelLoaded) {
-        asrHint.innerHTML = '✓ Whisper-base 已就绪（开源模型，本地推理，离线可用）。';
-        asrHint.classList.remove('warn');
-      } else {
-        asrHint.innerHTML = '🧠 已切到 <b>Whisper-base</b>（开源模型）。首次录音会下载约 145MB 模型，下载后缓存到本地，下次秒开。可点击「⚙️ 设置」中的「预加载模型」按钮提前下载。';
-        asrHint.classList.remove('warn');
-      }
-    } else {
-      if (!ASR.isSupported()) {
-        asrHint.textContent = '⚠️ 当前浏览器不支持原生语音识别，建议在「⚙️ 设置」切换到 Whisper 引擎，或用「模拟语音」演示。';
-        asrHint.classList.add('warn');
-      } else {
-        const isChrome = /Chrome/.test(navigator.userAgent) && !/Safari\/[0-9.]+ Version/.test(navigator.userAgent);
-        if (isChrome) {
-          asrHint.innerHTML = '✓ Web Speech 已就绪。<b>提示：</b>Chrome 国内可能报 network 错误，可在「⚙️ 设置」切到 <b>Whisper</b> 离线引擎，或改用 <b>Safari</b>。';
-        } else {
-          asrHint.textContent = '✓ Web Speech 已就绪。点击麦克风或按 空格键 开始/停止录音。';
-        }
-        asrHint.classList.remove('warn');
-      }
+  // ===== 自动加载 Whisper 模型（无需用户操作）=====
+  const bootLoader = $('boot-loader');
+  const bootBarFill = $('boot-bar-fill');
+  const bootMeta = $('boot-meta');
+
+  function setBoot(percent, label) {
+    if (bootBarFill) bootBarFill.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+    if (bootMeta) bootMeta.textContent = label;
+  }
+
+  function hideBoot() {
+    if (bootLoader) bootLoader.classList.add('hide');
+  }
+
+  function showBootError(msg) {
+    if (!bootLoader) return;
+    bootLoader.classList.add('error');
+    setBoot(0, '✗ ' + msg);
+    const tip = bootLoader.querySelector('.boot-tip');
+    if (tip) {
+      tip.innerHTML = '加载失败。可点击 <a href="javascript:void(0)" id="boot-retry">重试</a>，或刷新页面。';
+      const retry = $('boot-retry');
+      if (retry) retry.addEventListener('click', () => {
+        bootLoader.classList.remove('error');
+        bootLoader.querySelector('.boot-tip').innerHTML = '首次访问需下载约 145MB，缓存到本地（IndexedDB），下次秒开。<br/>加载完成后即可使用麦克风录音。';
+        autoBootWhisper();
+      });
     }
+  }
+
+  // 维护进度展示：transformers.js 会对每个文件回调 status=progress {file, progress, loaded, total}
+  // 我们把所有正在下载的文件聚合成总进度
+  const fileProgress = {}; // file -> { loaded, total }
+  function handleProgress(info) {
+    if (!info) return;
+    if (info.status === 'progress' && info.file) {
+      fileProgress[info.file] = {
+        loaded: info.loaded || 0,
+        total: info.total || 0,
+        progress: info.progress || 0,
+      };
+      let totalLoaded = 0;
+      let totalSize = 0;
+      Object.values(fileProgress).forEach(f => {
+        totalLoaded += f.loaded || 0;
+        totalSize += f.total || 0;
+      });
+      const pct = totalSize > 0 ? (totalLoaded / totalSize) * 100 : 0;
+      const mb = (b) => (b / (1024 * 1024)).toFixed(1);
+      setBoot(pct, `📥 ${mb(totalLoaded)}MB / ${mb(totalSize)}MB · ${Math.round(pct)}%`);
+    } else if (info.status === 'ready' || info.status === 'done') {
+      setBoot(100, '✓ 模型就绪');
+    } else if (info.status === 'initiate' && info.file) {
+      setBoot(0, `准备下载 ${info.file}…`);
+    } else if (info.status === 'download' && info.file) {
+      setBoot(0, `开始下载 ${info.file}…`);
+    }
+  }
+
+  async function autoBootWhisper() {
+    statusText.textContent = '⏳ 正在加载语音引擎，加载完后即可录音…';
+    setBoot(0, '准备中…');
+    try {
+      // 强制走 whisper 引擎
+      ASR_ROUTER.setEngine('whisper');
+      if (!ASR_WHISPER.isSupported()) {
+        // MediaRecorder 不支持 → 降级 webspeech
+        ASR_ROUTER.setEngine('webspeech');
+        hideBoot();
+        asrReady = true;
+        micBtn.disabled = false;
+        statusText.textContent = '⚠️ 当前浏览器不支持 MediaRecorder，已自动降级到 Web Speech';
+        return;
+      }
+      await ASR_WHISPER.loadModel(handleProgress);
+      asrReady = true;
+      micBtn.disabled = false;
+      setBoot(100, '✓ 模型已就绪（已缓存到本地，下次秒开）');
+      statusText.textContent = '💊 闲置中，点击麦克风开始';
+      // 1.2 秒后淡出 boot loader
+      setTimeout(() => hideBoot(), 1200);
+    } catch (e) {
+      console.error('[boot] whisper 加载失败', e);
+      const msg = (e && e.message) || String(e);
+      showBootError('模型下载失败：' + msg);
+      statusText.textContent = '⚠️ 模型加载失败，可在 boot 卡片点重试或刷新';
+    }
+  }
+  // 页面起来就自动加载
+  autoBootWhisper();
+
+  // ===== 启动检查（仅 webspeech 兜底场景需要展示提示）=====
+  function refreshAsrHint() {
+    // 默认隐藏：模型加载完已就绪，不需要额外提示
+    asrHint.style.display = 'none';
   }
   refreshAsrHint();
 
@@ -75,6 +139,10 @@
   // ===== 录音控制 =====
   function startRecord() {
     if (isRecording) return;
+    if (!asrReady) {
+      showToast('语音引擎正在加载中，请稍候…', 'warn');
+      return;
+    }
     isRecording = true;
     partialBox.textContent = '';
     rawBox.value = '';
@@ -99,16 +167,6 @@
         statusText.textContent = '⚠️ ' + err;
         micBtn.classList.remove('recording');
         isRecording = false;
-      },
-      onProgress: (info) => {
-        // Whisper 模型下载进度
-        if (info && info.status === 'progress') {
-          const pct = info.progress != null ? Math.round(info.progress) : 0;
-          const file = info.file || '';
-          statusText.textContent = `📥 下载模型 ${file} ${pct}%`;
-        } else if (info && info.status === 'done') {
-          statusText.textContent = '🧠 模型就绪，准备识别…';
-        }
       },
     });
   }
@@ -238,14 +296,6 @@
     $('cfg-base-url').value = cfg.base_url || '';
     $('cfg-api-key').value = cfg.api_key || '';
     $('cfg-model').value = cfg.model || '';
-    // ASR 引擎
-    $('cfg-asr-engine').value = ASR_ROUTER.getEngine();
-    // Whisper 状态
-    const ws = ASR_WHISPER.getStatus();
-    const statusEl = $('whisper-preload-status');
-    if (ws.modelLoaded) statusEl.textContent = '✓ 模型已就绪';
-    else if (ws.modelLoading) statusEl.textContent = '⏳ 下载中…';
-    else statusEl.textContent = '未下载';
     settingsModal.classList.add('show');
   }
   settingsBtn.addEventListener('click', openSettings);
@@ -258,48 +308,14 @@
       model: $('cfg-model').value.trim(),
     };
     LLM.saveConfig(cfg);
-    // 保存 ASR 引擎
-    const newEngine = $('cfg-asr-engine').value;
-    const oldEngine = ASR_ROUTER.getEngine();
-    ASR_ROUTER.setEngine(newEngine);
-    if (newEngine !== oldEngine) refreshAsrHint();
     settingsModal.classList.remove('show');
     const labelMap = {
       auto: '自动（服务器代理优先）',
       byok: '自带 Key 直连',
       mock: 'Mock 本地模拟',
     };
-    showToast(`已保存：${labelMap[cfg.provider] || cfg.provider} · ASR=${newEngine}`, 'success');
+    showToast(`已保存：${labelMap[cfg.provider] || cfg.provider}`, 'success');
   });
-
-  // ===== Whisper 预加载按钮 =====
-  const whisperPreloadBtn = $('whisper-preload-btn');
-  const whisperStatus = $('whisper-preload-status');
-  if (whisperPreloadBtn) {
-    whisperPreloadBtn.addEventListener('click', async () => {
-      whisperPreloadBtn.disabled = true;
-      whisperStatus.textContent = '⏳ 准备下载…';
-      try {
-        await ASR_ROUTER.preloadWhisper((info) => {
-          if (info && info.status === 'progress') {
-            const pct = info.progress != null ? Math.round(info.progress) : 0;
-            const file = info.file || '';
-            whisperStatus.textContent = `📥 ${file} ${pct}%`;
-          } else if (info && info.status === 'ready') {
-            whisperStatus.textContent = '✓ 模型已就绪';
-          }
-        });
-        whisperStatus.textContent = '✓ 模型已就绪（已缓存到本地）';
-        showToast('Whisper-base 模型加载完成', 'success');
-        refreshAsrHint();
-      } catch (e) {
-        whisperStatus.textContent = '✗ 加载失败：' + (e.message || e);
-        showToast('Whisper 模型加载失败：' + (e.message || e), 'error');
-      } finally {
-        whisperPreloadBtn.disabled = false;
-      }
-    });
-  }
 
   // ===== 公网分享横幅关闭（记忆 24h）=====
   const BANNER_KEY = 'capsule_banner_dismissed_at';
