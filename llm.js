@@ -44,9 +44,15 @@ const LLM = (() => {
   // ===== mock provider：本地规则模拟，演示用 =====
   // 核心目标：让 mock 也能给出"看起来有结构"的输出，不是简单去口癖。
 
-  // 1) 转写清洗：去口癖 + 压缩空白
+  // 1) 转写清洗：去口癖 + 自我修正归并 + 重复去除 + 压缩空白
   function cleanText(raw) {
-    return raw
+    let t = raw;
+    // 自我修正：「X 不对 / 不是 / 应该是 Y」→ 留 Y
+    // 简化版：把"不对X"/"不是X"/"应该是X"的前一个并列项替换掉
+    t = t.replace(/([^，,。；;]+?)\s*(?:不对|不是|应该是|改成|纠正一下)\s*([^，,。；;]+)/g, '$2');
+    // 重复短语去除：同一短语连续出现两次以上压成一次（限 3-12 字短语）
+    t = t.replace(/([\u4e00-\u9fa5]{3,12})(?:\s*\1){1,}/g, '$1');
+    return t
       .replace(/这个|那个|就是这样|就是说|就是个|嗯+|啊+|呃+|呢|然后说|然后呢|然后我|然后就|你知道吧|你看哈|对吧|我跟你说|我觉得吧|怎么说呢/g, '')
       .replace(/\s+/g, ' ')
       .trim();
@@ -309,31 +315,169 @@ const LLM = (() => {
         // 剥离"提醒我 / 别忘了 / 记得"等动作前缀
         let t = s.replace(/^[，,。；;]+|[，,。；;]+$/g, '').trim();
         t = t.replace(/^(提醒我|记得|别忘了|别忘|要|得|需要|帮我|麻烦你?)/, '').trim();
+        // 紧急标签
+        let tag = '';
+        if (/紧急|马上|立刻|赶紧/.test(t)) tag = ' [紧急]';
+        else if (/优先|重点|要紧/.test(t)) tag = ' [优先]';
         // 时间识别（更全：明天上午十点 / 周五 / 月底）
         const timeMatch = t.match(/(今天|明天|后天|周[一二三四五六日天]|[0-9]+月[0-9]+[日号]?|[上下]午[一二三四五六七八九十0-9]+点(半|十?[一二三四五]?分)?|[一二三四五六七八九十0-9]+点(半|十?[一二三四五]?分)?|[0-9]+:[0-9]+|周.之前|月底|本周|下周三?|下周.|下个月)/);
         if (timeMatch) {
-          const action = t.replace(timeMatch[0], '').replace(/[，,]+/g, '').trim();
-          return `- [ ] ${action} (截止: ${timeMatch[0]})`;
+          const action = t.replace(timeMatch[0], '').replace(/紧急|马上|立刻|赶紧|优先|重点|要紧/g, '').replace(/[，,]+/g, '').trim();
+          return `- [ ] ${action} (截止: ${timeMatch[0]})${tag}`;
         }
-        return `- [ ] ${t}`;
+        const action = t.replace(/紧急|马上|立刻|赶紧|优先|重点|要紧/g, '').trim();
+        return `- [ ] ${action}${tag}`;
       }).join('\n');
     }
 
-    // auto 模式路由
+    // ===== 新增模式的 mock 实现（粗略版本，主要给静态部署兜底，真效果靠 LLM）=====
+    if (mode === 'meeting') {
+      const sig = detectThemeSignal(cleaned);
+      const segs = splitSegments(cleaned);
+      const topic = sig.theme || extractTopic(cleaned, segs) || '会议纪要';
+      const issues = [], decisions = [], todos = [], risks = [];
+      segs.forEach(s => {
+        const t = s.replace(/^[，,。；;]+|[，,。；;]+$/g, '').trim();
+        if (!t) return;
+        if (/(决议|决定|结论|定了|敲定|确定下来)/.test(t)) decisions.push(t);
+        else if (/(风险|疑虑|担心|不确定|存疑|可能有问题)/.test(t)) risks.push(t);
+        else if (/(我负责|你负责|.负责|要做|需要|完成|提交|出结论|交付|发给)/.test(t)) todos.push(t);
+        else issues.push(t);
+      });
+      const lines = [topic, ''];
+      if (issues.length) {
+        lines.push('议题');
+        issues.forEach((it, i) => lines.push(`${i + 1}. ${it}`));
+        lines.push('');
+      }
+      if (decisions.length) {
+        lines.push('决议');
+        decisions.forEach(d => lines.push('- ' + d));
+        lines.push('');
+      }
+      if (todos.length) {
+        lines.push('待办');
+        todos.forEach(d => lines.push('- [ ] ' + d));
+        lines.push('');
+      }
+      if (risks.length) {
+        lines.push('风险 / 待跟进');
+        risks.forEach(d => lines.push('- ' + d));
+      }
+      return lines.join('\n').trim();
+    }
+
+    if (mode === 'diary') {
+      // 自然段：用句号/问号/感叹分段，每 2-3 句合一段
+      const sentences = cleaned.split(/(?<=[。！？!?])/).map(s => s.trim()).filter(Boolean);
+      if (sentences.length <= 2) return sentences.join('') || cleaned;
+      const paras = [];
+      const chunkSize = sentences.length >= 6 ? 3 : 2;
+      for (let i = 0; i < sentences.length; i += chunkSize) {
+        paras.push(sentences.slice(i, i + chunkSize).join(''));
+      }
+      return paras.join('\n\n');
+    }
+
+    if (mode === 'translate') {
+      // mock 没法真翻译，只做"剥离指令 + 提示需要真模型"
+      const stripped = cleaned
+        .replace(/翻译(成|为|到)?(英文|中文|日文|日语|英语|韩语|法语|德语|西班牙文)?/g, '')
+        .replace(/translate\s+(this\s+)?(to\s+\w+)?/gi, '')
+        .replace(/双语对照?|双语/g, '')
+        .trim();
+      return `[mock 无法真翻译，请在「⚙️ 设置」配置真模型 LLM]\n\n原文：${stripped || cleaned}`;
+    }
+
+    if (mode === 'prompt') {
+      // 把口述需求拆成 角色/任务/输入/输出 四块
+      return `角色 / Role\n[mock 占位] 资深助理\n\n任务 / Task\n${cleaned.slice(0, 80)}\n\n输入 / Input\n[用户提供的原始内容]\n\n输出要求 / Output\n- 格式：[待补充]\n- 风格：[待补充]\n- 限制：[待补充]\n\n[mock 模式下结构占位，真效果请配置 LLM]`;
+    }
+
+    if (mode === 'list') {
+      // 优先用"是 X"锚点
+      const shi = splitByShiAnchor(cleaned);
+      let items = [];
+      let theme = null;
+      if (shi && shi.length >= 2) {
+        items = shi;
+        const sig = detectThemeSignal(cleaned + ' ' + (shi.__preface || ''));
+        theme = sig.theme;
+      } else {
+        // 按顿号 / 逗号切
+        items = cleaned.split(/[，,、]/).map(s => s.trim()).filter(s => s && s.length >= 1);
+        const sig = detectThemeSignal(cleaned);
+        theme = sig.theme;
+        // 移除可能的引导句作为主题
+        if (!theme && items.length >= 2 && /(想买|要买|要带|出差|今年|清单|书单)/.test(items[0])) {
+          theme = items.shift();
+        }
+      }
+      const lines = [];
+      if (theme) { lines.push(theme); lines.push(''); }
+      items.forEach(it => {
+        const cleanedItem = it
+          .replace(/^(我?(想|要)?(买|带|有|要))/, '')
+          .replace(/^(的|了|啊|呢|嗯)+/, '')
+          .replace(/(帮我|麻烦你?|拜托)$/, '')
+          .trim();
+        if (cleanedItem) lines.push('- ' + cleanedItem);
+      });
+      return lines.join('\n').trim();
+    }
+
+    if (mode === 'long') {
+      // 长文：按句号切，每 4-5 句一段，第一行做标题
+      const sentences = cleaned.split(/(?<=[。！？!?])/).map(s => s.trim()).filter(Boolean);
+      if (sentences.length === 0) return cleaned;
+      // 标题：第一句去掉口语化前缀，截短
+      let title = sentences[0]
+        .replace(/^(我想|我来|今天我想|今天)/, '')
+        .replace(/[。！？!?]$/, '')
+        .trim();
+      if (title.length > 25) title = title.slice(0, 25);
+      const body = sentences.slice(1).length > 0 ? sentences.slice(1) : sentences;
+      const paras = [];
+      const chunkSize = 4;
+      for (let i = 0; i < body.length; i += chunkSize) {
+        paras.push(body.slice(i, i + chunkSize).join(''));
+      }
+      return [title, '', paras.join('\n\n')].join('\n');
+    }
+
+    // auto 模式路由（v2：支持新增的 meeting / diary / translate / prompt / list / long）
     let chosen = 'note';
     const sig = detectThemeSignal(cleaned);
     const hasShi = !!splitByShiAnchor(cleaned);
     const hasMultiPhase = /(一期|二期|三期).*?(二期|三期|四期)/.test(cleaned)
                        || /(首先|其次|然后|最后).*?(其次|然后|接着|最后|另外)/.test(cleaned);
     const todoSignal = /提醒|记得|别忘|要做|得做|周.之前|截止|安排/.test(cleaned);
-    const emailSignal = /(发邮件|抄送|邮件给|回复邮件|email)/.test(cleaned);
+    const emailSignal = /(发邮件|抄送|邮件给|回复邮件|email|回.*邮件|邮件告诉)/i.test(cleaned);
+    const meetingSignal = /(会议|开会|评审|这次会|今天会上|跟.+开了|跟.+对了|复盘|review|sync)/i.test(cleaned);
+    const diarySignal = /(今天的感觉|今天感觉|有点累|挺爽|心情|状态不太好|反思一下|复盘一下|我觉得这周)/.test(cleaned);
+    const translateSignal = /(翻译|translate|改成英文|改成中文|改成日文)/i.test(cleaned);
+    const promptSignal = /(写个prompt|写个提示词|让\s*ai|prompt模板)/i.test(cleaned);
+    const listShop = /(想买|要买|买几样|买点|出差.+带|今年.+读|书单|清单)/.test(cleaned);
+    const isLong = cleaned.length > 200;
 
-    if (sig.theme || hasShi || hasMultiPhase) {
-      chosen = 'note';                       // 主题信号 / 枚举锚点 / 多阶段 → note
+    if (translateSignal) {
+      chosen = 'translate';
+    } else if (promptSignal) {
+      chosen = 'prompt';
     } else if (emailSignal) {
       chosen = 'email';
-    } else if (todoSignal && cleaned.length <= 40) {
-      chosen = 'todo';                       // 短而纯的提醒 → todo
+    } else if (meetingSignal && (hasMultiPhase || (sig.theme && cleaned.length > 80))) {
+      chosen = 'meeting';
+    } else if (diarySignal) {
+      chosen = 'diary';
+    } else if (listShop && hasShi) {
+      chosen = 'list';
+    } else if (todoSignal && cleaned.length <= 40 && !hasMultiPhase && !sig.theme) {
+      chosen = 'todo';
+    } else if (isLong && !hasShi) {
+      chosen = 'long';
+    } else if (sig.theme || hasShi || hasMultiPhase) {
+      chosen = 'note';
     } else if (cleaned.length <= 25) {
       chosen = 'msg';
     } else {
