@@ -615,3 +615,48 @@ select:focus, select:hover {
   color: var(--accent-deep);
   margin-left: 6px;
 }
+
+/* 用例库 */
+.pe-cases {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.pe-case-btn {
+  font-size: 12px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--text-dim);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: .15s;
+}
+.pe-case-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent-deep);
+  background: var(--accent-soft);
+}
+
+/* 对比双栏 */
+.pe-compare {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 8px;
+}
+@media (max-width: 700px) {
+  .pe-compare { grid-template-columns: 1fr; }
+}
+.pe-compare-col h4 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: .5px;
+}
+.pe-compare-col .pe-result {
+  min-height: 140px;
+  font-size: 13px;
+}

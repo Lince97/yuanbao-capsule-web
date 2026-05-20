@@ -43,11 +43,93 @@ const LLM = (() => {
 
   // ===== mock provider：本地规则模拟，演示用 =====
   // 核心目标：让 mock 也能给出"看起来有结构"的输出，不是简单去口癖。
+
+  // 1) 转写清洗：去口癖 + 压缩空白
   function cleanText(raw) {
     return raw
-      .replace(/这个|那个|就是这样|就是说|就是个|嗯+|啊+|呃+|呢|然后说|然后呢|然后我|然后就|你知道吧|你看哈|对吧|我跟你说|我觉得吧|怎么说呢|帮我想想|帮我看看|帮我搞一下/g, '')
+      .replace(/这个|那个|就是这样|就是说|就是个|嗯+|啊+|呃+|呢|然后说|然后呢|然后我|然后就|你知道吧|你看哈|对吧|我跟你说|我觉得吧|怎么说呢/g, '')
       .replace(/\s+/g, ' ')
       .trim();
+  }
+
+  // 2) 元指令分离：把"对 AI 说的话"剥离出来
+  //    返回 { meta: '剥离掉的元指令片段', body: '剩下的真内容' }
+  function stripMetaInstructions(raw) {
+    const metaPatterns = [
+      /帮我尝试一下咱们?新的(结构化的?)?输出/g,
+      /帮我尝试一下/g,
+      /帮我整理一下/g,
+      /帮我看一下/g,
+      /帮我看看/g,
+      /帮我想想/g,
+      /帮我搞一下/g,
+      /帮我试试/g,
+      /帮我$/g,           // "...帮我"结尾
+      /^帮我[，,]?/g,
+      /咱们试试/g,
+      /咱们来试一下/g,
+      /测试一下/g,
+      /演示一下/g,
+      /用刚才那个模式/g,
+      /用新的(结构化)?(模式|输出|功能)/g,
+    ];
+    let body = raw;
+    let meta = [];
+    for (const r of metaPatterns) {
+      body = body.replace(r, (m) => { meta.push(m); return ''; });
+    }
+    body = body
+      .replace(/^[，,。；;\s]+|[，,。；;\s]+$/g, '')
+      .replace(/[，,]{2,}/g, '，')
+      .trim();
+    return { meta: meta.join(' '), body };
+  }
+
+  // 3) 识别"是 X 是 Y 是 Z"这种枚举锚点，剥离锚点后切分
+  //    例："是蒜味的小花生，是iPhone 16，是巧克力" → ["蒜味的小花生", "iPhone 16", "巧克力"]
+  function splitByShiAnchor(text) {
+    const segs = text.split(/[，,。；;]/).map(s => s.trim()).filter(Boolean);
+    let shiCount = 0;
+    for (const s of segs) if (/^是./.test(s)) shiCount += 1;
+    if (shiCount >= 2) {
+      const items = [];
+      for (const s of segs) {
+        if (/^是./.test(s)) {
+          const stripped = s.replace(/^是\s*/, '').trim();
+          // 如果第一条"是 X"里 X 包含主题信号词（想买X几个东西、几件事等），归到 preface 而非条目
+          // 这样可以避免"是我想买几个东西"被当成第一个商品
+          if (items.length === 0 && /(想买|要买|买几|几个东西|几件事|几样|几点)/.test(stripped)) {
+            items.__preface = (items.__preface ? items.__preface + '，' : '') + stripped;
+          } else {
+            items.push(stripped);
+          }
+        } else if (items.length === 0) {
+          items.__preface = (items.__preface ? items.__preface + '，' : '') + s;
+        } else {
+          if (s.length >= 2) items[items.length - 1] += s;
+        }
+      }
+      return items.filter(x => x && x.length >= 1);
+    }
+    return null;
+  }
+
+  // 主题信号识别：是否包含"几个 X / 几件事 / 三点 / 这几样"
+  // 返回 { isShoppingLike: true/false, theme: '主题文本' or null }
+  function detectThemeSignal(text) {
+    // 购物 / 物品类
+    const shopMatch = text.match(/(想买|要买|买点|买几样|买几个).{0,15}(东西|玩意|物品|零食|商品)?/);
+    if (shopMatch) return { isShoppingLike: true, theme: '购物清单' };
+    // 几件事
+    const thingsMatch = text.match(/(今天|这周|本周|这次)?有?([一二三四五六七八九十几]+)件事/);
+    if (thingsMatch) {
+      const prefix = (thingsMatch[1] || '') + thingsMatch[2] + '件事';
+      return { isShoppingLike: false, theme: prefix };
+    }
+    // 几点 / 三点 —— 必须紧跟"总结/要点/想法/事项/思考"才算主题，避免把"十点开会"误判
+    const pointsMatch = text.match(/([一二三四五六七八九十几]+)点(总结|要点|想法|事项|思考|原则|结论)/);
+    if (pointsMatch) return { isShoppingLike: false, theme: pointsMatch[0] };
+    return { isShoppingLike: false, theme: null };
   }
 
   // 把一段口语切成"语义片段" —— 关键升级：基于"枚举锚点"切片
@@ -89,7 +171,11 @@ const LLM = (() => {
       for (let i = 0; i < dedup.length; i++) {
         const start = dedup[i].end;
         const end = i + 1 < dedup.length ? dedup[i + 1].start : text.length;
-        const seg = text.slice(start, end).replace(/^[，,。；;:：的]+|[，,。；;]+$/g, '').trim();
+        // 尾部清理：去掉残留的标点和"第"字（"第X是"切分后的残骸）
+        const seg = text.slice(start, end)
+          .replace(/^[，,。；;:：的]+|[，,。；;]+$/g, '')
+          .replace(/第$/, '')
+          .trim();
         if (seg) result.push(seg);
       }
       result.__preface = preface;
@@ -122,7 +208,15 @@ const LLM = (() => {
 
   function mockComplete(messages, mode) {
     const userText = messages[messages.length - 1].content || '';
-    const cleaned = cleanText(userText);
+
+    // 第 1 步：剥离元指令
+    const { body: bodyRaw } = stripMetaInstructions(userText);
+    if (!bodyRaw || bodyRaw.length < 2) {
+      // 整段都是元指令
+      return mode === 'auto' ? '[判定: note]\n[空内容]' : '[空内容]';
+    }
+    // 第 2 步：去口癖
+    const cleaned = cleanText(bodyRaw);
 
     if (mode === 'msg') {
       // 聊天消息：去口癖 + 自然停顿，但保持单段
@@ -132,11 +226,43 @@ const LLM = (() => {
     }
 
     if (mode === 'note') {
-      // 结构化笔记：有序列表，待办放最后
-      const segs = splitSegments(cleaned);
+      // 优先识别"是 X 是 Y 是 Z"枚举锚点
+      const shiItems = splitByShiAnchor(cleaned);
+      if (shiItems && shiItems.length >= 2) {
+        const sig = detectThemeSignal(cleaned + ' ' + (shiItems.__preface || ''));
+        // 主题优先用信号词识别的（如"购物清单"），其次才用 preface
+        let theme = sig.theme;
+        if (!theme && shiItems.__preface) {
+          // preface 自带主题信号已经被 detectThemeSignal 识别；如果都没有，用 preface 但去掉"我想 X 几个 Y"这种引导
+          theme = shiItems.__preface
+            .replace(/(我)?(想|要)?(说|讲|告诉你|跟你说)?/, '')
+            .replace(/(几|这几|那几)(个|件|样)(东西|事情|事|玩意)/, '')
+            .trim();
+          if (!theme) theme = null;
+        }
+        const useDash = sig.isShoppingLike;
+        const lines = [];
+        if (theme && theme.length >= 2) { lines.push(theme); lines.push(''); }
+        shiItems.forEach((it, i) => {
+          // 进一步剥离每条尾部残留的元指令（如最后一条带"帮我"）
+          const cleanedItem = it
+            .replace(/^(的|了|啊|呢|嗯)+/, '')
+            .replace(/(帮我|麻烦你?|拜托)$/, '')
+            .trim();
+          if (!cleanedItem) return;
+          if (useDash) lines.push('- ' + cleanedItem);
+          else lines.push(`${i + 1}. ${cleanedItem}`);
+        });
+        return lines.join('\n');
+      }
 
+      // 通用结构化路径
+      const segs = splitSegments(cleaned);
       if (segs.length <= 1) {
-        return `1. ${cleaned}`;
+        // 单段陈述，不硬切；msg 化输出
+        let out = cleaned.replace(/[，,]{2,}/g, '，');
+        if (!/[。？！?!]$/.test(out)) out += '。';
+        return out;
       }
 
       // 区分"动作类"（待办）和"陈述类"（要点）
@@ -145,26 +271,23 @@ const LLM = (() => {
       segs.forEach(s => {
         const trimmed = s.replace(/^[，,。；;]+|[，,。；;]+$/g, '').trim();
         if (!trimmed) return;
-        if (/(要做|得做|需要|准备|完成|发送|确认|约一下|约见|提醒|记得|跟进|联系|安排|提交|处理|回复|开会)/.test(trimmed)) {
+        if (/(要做|得做|需要|准备|完成|发送|确认|约一下|约见|提醒|记得|跟进|联系|安排|提交|处理|回复|开会|别忘|发个)/.test(trimmed)) {
           actions.push(trimmed);
         } else {
           points.push(trimmed);
         }
       });
 
+      const sig = detectThemeSignal(cleaned);
       const lines = [];
-      let idx = 1;
-      // preface（开头引导语）作为第 1 条
-      if (segs.__preface && segs.__preface.length >= 3 && segs.__preface.length <= 60) {
-        lines.push(`${idx}. ${segs.__preface}`);
-        idx += 1;
+      // 主题作为独立首行
+      if (sig.theme) { lines.push(sig.theme); lines.push(''); }
+      else if (segs.__preface && segs.__preface.length >= 3 && segs.__preface.length <= 40) {
+        lines.push(segs.__preface); lines.push('');
       }
-      points.forEach(p => {
-        lines.push(`${idx}. ${p}`);
-        idx += 1;
-      });
+      points.forEach((p, i) => lines.push(`${i + 1}. ${p}`));
       if (actions.length) {
-        if (lines.length) lines.push('');
+        if (lines.length && lines[lines.length - 1] !== '') lines.push('');
         actions.forEach(a => lines.push('- [ ] ' + a));
       }
       return lines.join('\n');
@@ -181,10 +304,13 @@ const LLM = (() => {
 
     if (mode === 'todo') {
       const segs = splitSegments(cleaned);
-      if (segs.length <= 1) return '- [ ] ' + cleaned;
-      return segs.map(s => {
-        const t = s.replace(/^[，,。；;]+|[，,。；;]+$/g, '').trim();
-        const timeMatch = t.match(/(今天|明天|后天|周[一二三四五六日天]|[0-9]+月[0-9]+[日号]?|[上下]午|[0-9]+点|[0-9]+:[0-9]+|周.之前|月底|本周|下周)/);
+      const items = segs.length <= 1 ? [cleaned] : segs;
+      return items.map(s => {
+        // 剥离"提醒我 / 别忘了 / 记得"等动作前缀
+        let t = s.replace(/^[，,。；;]+|[，,。；;]+$/g, '').trim();
+        t = t.replace(/^(提醒我|记得|别忘了|别忘|要|得|需要|帮我|麻烦你?)/, '').trim();
+        // 时间识别（更全：明天上午十点 / 周五 / 月底）
+        const timeMatch = t.match(/(今天|明天|后天|周[一二三四五六日天]|[0-9]+月[0-9]+[日号]?|[上下]午[一二三四五六七八九十0-9]+点(半|十?[一二三四五]?分)?|[一二三四五六七八九十0-9]+点(半|十?[一二三四五]?分)?|[0-9]+:[0-9]+|周.之前|月底|本周|下周三?|下周.|下个月)/);
         if (timeMatch) {
           const action = t.replace(timeMatch[0], '').replace(/[，,]+/g, '').trim();
           return `- [ ] ${action} (截止: ${timeMatch[0]})`;
@@ -193,13 +319,27 @@ const LLM = (() => {
       }).join('\n');
     }
 
-    // auto
+    // auto 模式路由
     let chosen = 'note';
-    if (/提醒|记得|别忘|要做|得做|周.之前|截止|安排|约/.test(cleaned)) chosen = 'todo';
-    else if (/邮件|email|发邮件|抄送|发给.*老板|回复.*邮件/.test(cleaned)) chosen = 'email';
-    else if (/^(那个)?(嗨|hi|hey|你好)/.test(cleaned) || cleaned.length <= 25) chosen = 'msg';
-    else chosen = 'note';
-    const sub = mockComplete([{ content: cleaned }], chosen);
+    const sig = detectThemeSignal(cleaned);
+    const hasShi = !!splitByShiAnchor(cleaned);
+    const hasMultiPhase = /(一期|二期|三期).*?(二期|三期|四期)/.test(cleaned)
+                       || /(首先|其次|然后|最后).*?(其次|然后|接着|最后|另外)/.test(cleaned);
+    const todoSignal = /提醒|记得|别忘|要做|得做|周.之前|截止|安排/.test(cleaned);
+    const emailSignal = /(发邮件|抄送|邮件给|回复邮件|email)/.test(cleaned);
+
+    if (sig.theme || hasShi || hasMultiPhase) {
+      chosen = 'note';                       // 主题信号 / 枚举锚点 / 多阶段 → note
+    } else if (emailSignal) {
+      chosen = 'email';
+    } else if (todoSignal && cleaned.length <= 40) {
+      chosen = 'todo';                       // 短而纯的提醒 → todo
+    } else if (cleaned.length <= 25) {
+      chosen = 'msg';
+    } else {
+      chosen = 'note';
+    }
+    const sub = mockComplete([{ content: bodyRaw }], chosen);
     return `[判定: ${chosen}]\n${sub}`;
   }
 

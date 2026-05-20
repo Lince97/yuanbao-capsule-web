@@ -55,16 +55,30 @@
       <!-- 右：测试输入和输出 -->
       <div class="pe-col">
         <h3>④ 测试输入（粘贴一段口语原文）</h3>
-        <textarea id="pe-input" class="input" placeholder="比如：今天跟Liya聊了一下元宝胶囊的方向她说一期可以先做结构化和翻译然后二期加轻问答和通话三期再说生态联动"></textarea>
+        <div class="pe-cases" id="pe-cases"></div>
+        <textarea id="pe-input" class="input" placeholder="点上方用例标签快速填入；或自己粘贴一段语音转写"></textarea>
 
         <div class="pe-bar" style="margin-top:10px;">
           <button class="btn primary" id="run-btn">▶︎ 运行（Cmd/Ctrl + Enter）</button>
+          <button class="btn ghost" id="run-compare-btn" title="同一段输入，分别用 mock 和 当前 provider 跑一次">🔀 对比 mock vs 真模型</button>
           <button class="btn ghost" id="copy-out-btn">📋 复制结果</button>
           <span class="meta" id="run-meta"></span>
         </div>
 
         <h3 style="margin-top:14px;">⑤ 输出</h3>
         <div class="pe-result" id="pe-output">（点上方「运行」试试）</div>
+
+        <!-- 对比模式输出 -->
+        <div class="pe-compare" id="pe-compare-block" style="display:none;">
+          <div class="pe-compare-col">
+            <h4>🤖 真模型（LLM）</h4>
+            <div class="pe-result" id="pe-out-llm">—</div>
+          </div>
+          <div class="pe-compare-col">
+            <h4>📐 Mock（本地规则）</h4>
+            <div class="pe-result" id="pe-out-mock">—</div>
+          </div>
+        </div>
 
         <h3 style="margin-top:14px;">⑥ 实际发出的 messages</h3>
         <textarea id="pe-final-messages" class="output" readonly placeholder="运行后这里展示真正发给 LLM 的 messages 数组"></textarea>
@@ -239,11 +253,28 @@
     }
     ['pe-system', 'pe-mode', 'pe-examples'].forEach(id => $(id).addEventListener('input', checkDirty));
 
+    // ===== 用例库 =====
+    const casesEl = $('pe-cases');
+    (window.CAPSULE_PE_CASES || []).forEach((c) => {
+      const btn = document.createElement('button');
+      btn.className = 'pe-case-btn';
+      btn.textContent = c.name;
+      btn.title = c.text;
+      btn.addEventListener('click', () => {
+        $('pe-input').value = c.text;
+        if (c.expectMode && window.CAPSULE_PROMPTS.modes[c.expectMode]) {
+          switchMode(c.expectMode);
+        }
+      });
+      casesEl.appendChild(btn);
+    });
+
     // ===== 运行 =====
     async function run() {
       const input = $('pe-input').value.trim();
       if (!input) { showToast('请输入测试文本', 'warn'); return; }
       if (!readEditorIntoPrompts()) return;
+      $('pe-compare-block').style.display = 'none';
       $('run-meta').textContent = '⏳ 运行中…';
       $('pe-output').textContent = '...';
       const t0 = performance.now();
@@ -265,7 +296,53 @@
         $('run-meta').textContent = '失败';
       }
     }
+
+    // ===== 对比运行：同输入，mock 和 当前 provider 各跑一次 =====
+    async function runCompare() {
+      const input = $('pe-input').value.trim();
+      if (!input) { showToast('请输入测试文本', 'warn'); return; }
+      if (!readEditorIntoPrompts()) return;
+      $('pe-compare-block').style.display = 'grid';
+      $('pe-out-llm').textContent = '⏳ 运行中…';
+      $('pe-out-mock').textContent = '⏳ 运行中…';
+      $('run-meta').textContent = '对比中…';
+
+      // 1) 当前 provider 跑（不强制改 cfg，让用户在「设置」里选好 byok 或 server）
+      const t0 = performance.now();
+      try {
+        const { text, provider } = await LLM.complete(input, currentMode);
+        const dt = Math.round(performance.now() - t0);
+        $('pe-out-llm').textContent = text;
+        $('pe-out-llm').setAttribute('data-provider', provider);
+        // 标题加上真实 provider
+        document.querySelector('#pe-compare-block .pe-compare-col:nth-child(1) h4').textContent =
+          `🤖 当前 provider · ${provider} · ${dt}ms`;
+      } catch (e) {
+        $('pe-out-llm').textContent = '⚠️ 失败：' + e.message;
+      }
+
+      // 2) 强制 mock 跑一次
+      const origCfg = LLM.getConfig();
+      LLM.saveConfig({ ...origCfg, provider: 'mock' });
+      try {
+        const t1 = performance.now();
+        const { text } = await LLM.complete(input, currentMode);
+        const dt = Math.round(performance.now() - t1);
+        $('pe-out-mock').textContent = text;
+        document.querySelector('#pe-compare-block .pe-compare-col:nth-child(2) h4').textContent =
+          `📐 Mock（本地规则）· ${dt}ms`;
+      } catch (e) {
+        $('pe-out-mock').textContent = '⚠️ 失败：' + e.message;
+      } finally {
+        LLM.saveConfig(origCfg);  // 恢复
+      }
+      $('run-meta').textContent = '对比完成';
+
+      // 主输出区也填一份（默认显示真模型那份）
+      $('pe-output').textContent = $('pe-out-llm').textContent;
+    }
     $('run-btn').addEventListener('click', run);
+    $('run-compare-btn').addEventListener('click', runCompare);
     document.addEventListener('keydown', (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
         e.preventDefault();
@@ -309,8 +386,8 @@
       if (e.target === settingsModal) settingsModal.classList.remove('show');
     });
 
-    // 默认填一个示例输入
-    $('pe-input').value = '今天跟Liya聊了一下元宝胶囊的方向她说一期可以先做结构化和翻译然后二期加轻问答和通话三期再说生态联动';
+    // 默认填一个示例输入：你最近反馈的购物清单 case
+    $('pe-input').value = '帮我尝试一下咱们新的结构化的输出，是我想买几个东西，是蒜味的小花生，是 iPhone 16 Plus，是巧克力，帮我';
   })();
   </script>
 </body>
