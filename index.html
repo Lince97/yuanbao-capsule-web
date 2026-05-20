@@ -101,6 +101,20 @@
       </div>
       <div class="modal-body">
         <div class="field">
+          <label>🎙 ASR 引擎（语音识别）</label>
+          <select id="cfg-asr-engine">
+            <option value="webspeech">Web Speech（浏览器原生 · 零下载 · 国内 Chrome 可能 network 错）</option>
+            <option value="whisper">Whisper-base（开源模型 · 首次下载 ~145MB · 离线可用 · 推荐 Chrome 用）</option>
+          </select>
+          <div class="field-tip">
+            切到 Whisper 后，第一次录音会下载模型并缓存到本地（IndexedDB），之后秒开。可点下方按钮先预热。
+          </div>
+          <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+            <button class="btn ghost" id="whisper-preload-btn" type="button">⬇️ 预加载 Whisper 模型</button>
+            <span id="whisper-preload-status" style="font-size:12px;color:var(--muted);align-self:center;"></span>
+          </div>
+        </div>
+        <div class="field">
           <label>Provider</label>
           <select id="cfg-provider">
             <option value="auto">自动（默认走服务器代理，没配就降级 mock）</option>
@@ -150,6 +164,7 @@
 
   <script src="prompts.js"></script>
   <script src="llm.js"></script>
+  <script src="asr-whisper.js"></script>
   <script src="asr.js"></script>
   <script src="app.js"></script>
 </body>

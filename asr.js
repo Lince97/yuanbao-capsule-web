@@ -124,3 +124,39 @@ const ASR = (() => {
 
   return { start, stop, isSupported, getStatus };
 })();
+
+// =====================================================================
+// ASR Router：根据 localStorage capsule_asr_engine 选择引擎
+//   - 'webspeech' (默认): 用浏览器原生（快、零下载，国内 Chrome 可能 network 错误）
+//   - 'whisper'         : 用 Whisper-base 开源模型（首次下载 ~145MB，离线可用）
+// 暴露 window.ASR_ROUTER 供 app.js 使用；保留 window.ASR 向后兼容
+// =====================================================================
+const ASR_ROUTER = (() => {
+  const ENGINE_KEY = 'capsule_asr_engine_v1';
+  function getEngine() {
+    return localStorage.getItem(ENGINE_KEY) || 'webspeech';
+  }
+  function setEngine(name) {
+    localStorage.setItem(ENGINE_KEY, name);
+  }
+  function getCurrent() {
+    if (getEngine() === 'whisper' && typeof ASR_WHISPER !== 'undefined') return ASR_WHISPER;
+    return ASR;
+  }
+  return {
+    getEngine,
+    setEngine,
+    start: (opts) => getCurrent().start(opts),
+    stop: () => getCurrent().stop(),
+    isSupported: () => getCurrent().isSupported(),
+    getStatus: () => {
+      const s = getCurrent().getStatus();
+      return Object.assign({ engine: getEngine() }, s);
+    },
+    // Whisper 专用：预加载模型
+    preloadWhisper: (onProgress) => {
+      if (typeof ASR_WHISPER !== 'undefined') return ASR_WHISPER.loadModel(onProgress);
+      return Promise.reject(new Error('Whisper 引擎未加载'));
+    },
+  };
+})();

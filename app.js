@@ -31,17 +31,39 @@
   let isRecording = false;
 
   // ===== 启动检查 =====
-  if (!ASR.isSupported()) {
-    asrHint.textContent = '⚠️ 当前浏览器不支持原生语音识别，已自动启用「模拟语音」演示模式。建议使用最新版 Chrome/Edge/Safari。';
-    asrHint.classList.add('warn');
-  } else {
-    const isChrome = /Chrome/.test(navigator.userAgent) && !/Safari\/[0-9.]+ Version/.test(navigator.userAgent);
-    if (isChrome) {
-      asrHint.innerHTML = '✓ 已就绪。<b>提示：</b>Chrome 的语音识别需联 Google 服务，国内可能报 network 错误，建议改用 <b>Safari</b>。';
+  function refreshAsrHint() {
+    const engine = ASR_ROUTER.getEngine();
+    if (engine === 'whisper') {
+      const status = ASR_WHISPER.getStatus();
+      if (!ASR_WHISPER.isSupported()) {
+        asrHint.innerHTML = '⚠️ 当前浏览器不支持 MediaRecorder，无法用 Whisper 引擎。已自动回退 Web Speech。';
+        asrHint.classList.add('warn');
+        ASR_ROUTER.setEngine('webspeech');
+        return refreshAsrHint();
+      }
+      if (status.modelLoaded) {
+        asrHint.innerHTML = '✓ Whisper-base 已就绪（开源模型，本地推理，离线可用）。';
+        asrHint.classList.remove('warn');
+      } else {
+        asrHint.innerHTML = '🧠 已切到 <b>Whisper-base</b>（开源模型）。首次录音会下载约 145MB 模型，下载后缓存到本地，下次秒开。可点击「⚙️ 设置」中的「预加载模型」按钮提前下载。';
+        asrHint.classList.remove('warn');
+      }
     } else {
-      asrHint.textContent = '✓ 已就绪。点击麦克风或按 空格键 开始/停止录音。';
+      if (!ASR.isSupported()) {
+        asrHint.textContent = '⚠️ 当前浏览器不支持原生语音识别，建议在「⚙️ 设置」切换到 Whisper 引擎，或用「模拟语音」演示。';
+        asrHint.classList.add('warn');
+      } else {
+        const isChrome = /Chrome/.test(navigator.userAgent) && !/Safari\/[0-9.]+ Version/.test(navigator.userAgent);
+        if (isChrome) {
+          asrHint.innerHTML = '✓ Web Speech 已就绪。<b>提示：</b>Chrome 国内可能报 network 错误，可在「⚙️ 设置」切到 <b>Whisper</b> 离线引擎，或改用 <b>Safari</b>。';
+        } else {
+          asrHint.textContent = '✓ Web Speech 已就绪。点击麦克风或按 空格键 开始/停止录音。';
+        }
+        asrHint.classList.remove('warn');
+      }
     }
   }
+  refreshAsrHint();
 
   // ===== Toast =====
   function showToast(msg, type = 'info') {
@@ -58,7 +80,7 @@
     rawBox.value = '';
     micBtn.classList.add('recording');
     statusText.textContent = '🔴 录音中…';
-    ASR.start({
+    ASR_ROUTER.start({
       onPartial: (txt) => {
         partialBox.textContent = txt;
       },
@@ -78,6 +100,16 @@
         micBtn.classList.remove('recording');
         isRecording = false;
       },
+      onProgress: (info) => {
+        // Whisper 模型下载进度
+        if (info && info.status === 'progress') {
+          const pct = info.progress != null ? Math.round(info.progress) : 0;
+          const file = info.file || '';
+          statusText.textContent = `📥 下载模型 ${file} ${pct}%`;
+        } else if (info && info.status === 'done') {
+          statusText.textContent = '🧠 模型就绪，准备识别…';
+        }
+      },
     });
   }
 
@@ -86,7 +118,7 @@
     statusText.textContent = '⏳ 处理中…';
     micBtn.classList.remove('recording');
     micBtn.classList.add('processing');
-    ASR.stop();
+    ASR_ROUTER.stop();
     isRecording = false;
   }
 
@@ -206,6 +238,14 @@
     $('cfg-base-url').value = cfg.base_url || '';
     $('cfg-api-key').value = cfg.api_key || '';
     $('cfg-model').value = cfg.model || '';
+    // ASR 引擎
+    $('cfg-asr-engine').value = ASR_ROUTER.getEngine();
+    // Whisper 状态
+    const ws = ASR_WHISPER.getStatus();
+    const statusEl = $('whisper-preload-status');
+    if (ws.modelLoaded) statusEl.textContent = '✓ 模型已就绪';
+    else if (ws.modelLoading) statusEl.textContent = '⏳ 下载中…';
+    else statusEl.textContent = '未下载';
     settingsModal.classList.add('show');
   }
   settingsBtn.addEventListener('click', openSettings);
@@ -218,14 +258,48 @@
       model: $('cfg-model').value.trim(),
     };
     LLM.saveConfig(cfg);
+    // 保存 ASR 引擎
+    const newEngine = $('cfg-asr-engine').value;
+    const oldEngine = ASR_ROUTER.getEngine();
+    ASR_ROUTER.setEngine(newEngine);
+    if (newEngine !== oldEngine) refreshAsrHint();
     settingsModal.classList.remove('show');
     const labelMap = {
       auto: '自动（服务器代理优先）',
       byok: '自带 Key 直连',
       mock: 'Mock 本地模拟',
     };
-    showToast(`已保存：${labelMap[cfg.provider] || cfg.provider}`, 'success');
+    showToast(`已保存：${labelMap[cfg.provider] || cfg.provider} · ASR=${newEngine}`, 'success');
   });
+
+  // ===== Whisper 预加载按钮 =====
+  const whisperPreloadBtn = $('whisper-preload-btn');
+  const whisperStatus = $('whisper-preload-status');
+  if (whisperPreloadBtn) {
+    whisperPreloadBtn.addEventListener('click', async () => {
+      whisperPreloadBtn.disabled = true;
+      whisperStatus.textContent = '⏳ 准备下载…';
+      try {
+        await ASR_ROUTER.preloadWhisper((info) => {
+          if (info && info.status === 'progress') {
+            const pct = info.progress != null ? Math.round(info.progress) : 0;
+            const file = info.file || '';
+            whisperStatus.textContent = `📥 ${file} ${pct}%`;
+          } else if (info && info.status === 'ready') {
+            whisperStatus.textContent = '✓ 模型已就绪';
+          }
+        });
+        whisperStatus.textContent = '✓ 模型已就绪（已缓存到本地）';
+        showToast('Whisper-base 模型加载完成', 'success');
+        refreshAsrHint();
+      } catch (e) {
+        whisperStatus.textContent = '✗ 加载失败：' + (e.message || e);
+        showToast('Whisper 模型加载失败：' + (e.message || e), 'error');
+      } finally {
+        whisperPreloadBtn.disabled = false;
+      }
+    });
+  }
 
   // ===== 公网分享横幅关闭（记忆 24h）=====
   const BANNER_KEY = 'capsule_banner_dismissed_at';
