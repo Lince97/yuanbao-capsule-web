@@ -1,0 +1,9 @@
+{
+  "name": "yuanbao-capsule-web",
+  "version": "0.2.0",
+  "private": true,
+  "description": "元宝胶囊 Web Demo · 公网可分享版本（静态前端 + Vercel Serverless 代理）",
+  "engines": {
+    "node": ">=18"
+  }
+}

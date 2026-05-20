@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>元宝胶囊 · 语音输入 Demo</title>
+  <meta name="theme-color" content="#0a1410" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="app-title">
+        <div class="app-logo" aria-label="元宝胶囊">
+          <!-- 胶囊形 logo -->
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="4" y="7" width="16" height="10" rx="5" fill="rgba(255,255,255,.95)"/>
+            <rect x="4" y="7" width="8" height="10" rx="5" fill="rgba(255,255,255,.55)"/>
+            <circle cx="12" cy="12" r="1.6" fill="#1FA970"/>
+          </svg>
+        </div>
+        <div>
+          <h1>元宝胶囊</h1>
+          <div class="sub">语音输入 · 结构化整理 · Web Demo</div>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button class="icon-btn" id="prompt-btn" title="查看上次 Prompt">📜 Prompt</button>
+        <button class="icon-btn" id="settings-btn" title="LLM 设置">⚙️ 设置</button>
+      </div>
+    </header>
+
+    <!-- 公网分享提示横幅 -->
+    <div class="banner" id="welcome-banner">
+      <div class="banner-title">👋 欢迎来看 demo</div>
+      <div class="banner-body">
+        这是一个语音输入 → 结构化文本的体验 demo。<b>建议用 Mac/iOS Safari 打开</b>，Chrome 在国内会报语音识别 network 错误。
+        没有麦克风也可以点下方「🎭 模拟一段语音」或「⌨️ 直接输入」体验整理效果。
+      </div>
+      <button class="banner-close" id="banner-close" aria-label="关闭">×</button>
+    </div>
+
+    <!-- 麦克风区 -->
+    <section class="mic-section">
+      <button class="mic-btn" id="mic-btn" aria-label="开始/停止录音">
+        <svg viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+          <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3z"/>
+          <path d="M19 11a1 1 0 1 0-2 0 5 5 0 0 1-10 0 1 1 0 1 0-2 0 7 7 0 0 0 6 6.92V20H8a1 1 0 1 0 0 2h8a1 1 0 1 0 0-2h-3v-2.08A7 7 0 0 0 19 11z"/>
+        </svg>
+      </button>
+      <div class="mic-meta">
+        <div class="status-text" id="status-text">💊 闲置中，点击麦克风开始</div>
+        <div class="shortcut-hint">快捷键：<kbd>Space</kbd> 开始/停止 · <kbd>Esc</kbd> 中断</div>
+      </div>
+      <div class="partial-box" id="partial-text"></div>
+      <div class="asr-hint" id="asr-hint">正在检查浏览器能力…</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;">
+        <button class="btn ghost" id="mock-btn">🎭 模拟一段语音（不录音）</button>
+        <button class="btn ghost" id="text-btn">⌨️ 直接输入测试</button>
+      </div>
+    </section>
+
+    <!-- 模式选择 -->
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">整理模式</span>
+        <select id="mode-select" aria-label="选择模式"></select>
+      </div>
+      <div id="mode-desc" style="font-size:12px;color:var(--text-mute);line-height:1.6;">
+        切换模式会用当前原文重新整理一次。模式规则定义在 <code>prompts.js</code>，改完刷新即生效。
+      </div>
+    </div>
+
+    <!-- 原始转写 -->
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">📥 原始转写</span>
+        <div class="card-actions">
+          <button class="btn ghost" id="reprocess-btn">重新整理</button>
+        </div>
+      </div>
+      <textarea id="raw-text" placeholder="语音识别结果会显示在这里，可以手动修改后点「重新整理」"></textarea>
+    </div>
+
+    <!-- 整理结果 -->
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">✨ 整理结果</span>
+        <div class="card-actions">
+          <button class="btn ghost" id="clear-btn">清空</button>
+          <button class="btn primary" id="copy-btn">📋 复制</button>
+        </div>
+      </div>
+      <textarea id="result-text" placeholder="整理后的文本会显示在这里，可直接编辑后复制"></textarea>
+    </div>
+
+    <footer class="app-footer">
+      默认尝试调用服务器代理；服务端没配 LLM 就自动降级到 mock 演示 · 想用真模型但额度限制时可在「设置」里填自己的 key · PE 配置见 <code>prompts.js</code>
+    </footer>
+  </div>
+
+  <!-- 设置弹窗 -->
+  <div class="modal" id="settings-modal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3>⚙️ LLM 设置</h3>
+        <button class="modal-close" id="settings-close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="field">
+          <label>Provider</label>
+          <select id="cfg-provider">
+            <option value="auto">自动（默认走服务器代理，没配就降级 mock）</option>
+            <option value="byok">自带 Key（直连 OpenAI 兼容服务）</option>
+            <option value="mock">Mock（纯本地规则模拟，离线也能用）</option>
+          </select>
+          <div class="field-tip">
+            想体验真模型效果但服务器没额度时，选「自带 Key」并填下面三项。
+          </div>
+        </div>
+        <div class="field">
+          <label>Base URL</label>
+          <input id="cfg-base-url" type="text" placeholder="如 https://api.deepseek.com/v1" />
+          <div class="field-tip">填到 /v1 这一级；最终请求 path = base_url + /chat/completions</div>
+        </div>
+        <div class="field">
+          <label>API Key</label>
+          <input id="cfg-api-key" type="password" placeholder="sk-..." />
+          <div class="field-tip">仅保存在你本地浏览器的 localStorage，<b>不会上传到服务器</b></div>
+        </div>
+        <div class="field">
+          <label>Model</label>
+          <input id="cfg-model" type="text" placeholder="如 gpt-4o-mini / deepseek-chat / qwen-plus" />
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn ghost" id="settings-close-2" onclick="document.getElementById('settings-modal').classList.remove('show')">取消</button>
+        <button class="btn primary" id="settings-save">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Prompt 查看 -->
+  <div class="modal" id="prompt-modal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3>📜 上次发出的 Prompt</h3>
+        <button class="modal-close" id="prompt-close">×</button>
+      </div>
+      <div class="modal-body">
+        <div id="prompt-content">（还没有调用过 LLM，先录一段试试）</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="prompts.js"></script>
+  <script src="llm.js"></script>
+  <script src="asr.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
