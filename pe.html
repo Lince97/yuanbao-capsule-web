@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>元宝胶囊 · PE 调试台</title>
+  <meta name="theme-color" content="#1FA970" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="container" style="max-width:1180px;">
+    <header class="app-header">
+      <div class="app-title">
+        <div class="app-logo" aria-label="元宝胶囊">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="4" y="7" width="16" height="10" rx="5" fill="rgba(255,255,255,.95)"/>
+            <rect x="4" y="7" width="8" height="10" rx="5" fill="rgba(255,255,255,.55)"/>
+            <circle cx="12" cy="12" r="1.6" fill="#1FA970"/>
+          </svg>
+        </div>
+        <div>
+          <h1>PE 调试台 <span class="pe-pill" id="provider-pill">未运行</span></h1>
+          <div class="sub">在线编辑 system / mode prompt，左右对照看效果</div>
+        </div>
+      </div>
+      <div class="header-actions">
+        <a class="icon-btn" href="index.html" title="回到主页">⬅️ 回到 Demo</a>
+        <button class="icon-btn" id="settings-btn" title="LLM 设置">⚙️ 设置</button>
+        <button class="icon-btn" id="reset-btn" title="恢复 prompts.js 原始版本">↺ 恢复默认</button>
+      </div>
+    </header>
+
+    <!-- 模式 tab -->
+    <div class="pe-tabs" id="mode-tabs"></div>
+
+    <div class="pe-layout">
+      <!-- 左：Prompt 编辑 -->
+      <div class="pe-col">
+        <h3>① System Prompt（人格 + 红线）</h3>
+        <textarea id="pe-system" class="system" spellcheck="false"></textarea>
+
+        <h3 style="margin-top:14px;">② Mode Prompt（<span id="pe-mode-label"></span>）</h3>
+        <textarea id="pe-mode" spellcheck="false"></textarea>
+
+        <h3 style="margin-top:14px;">③ Few-shot 示例（JSON 数组）</h3>
+        <textarea id="pe-examples" spellcheck="false" style="min-height:140px;"></textarea>
+
+        <div class="pe-bar" style="margin-top:14px;">
+          <button class="btn primary" id="apply-btn">💾 应用到本次会话</button>
+          <button class="btn ghost" id="save-btn">📌 保存到浏览器（下次自动加载）</button>
+          <span class="meta" id="dirty-meta">已与默认一致</span>
+        </div>
+      </div>
+
+      <!-- 右：测试输入和输出 -->
+      <div class="pe-col">
+        <h3>④ 测试输入（粘贴一段口语原文）</h3>
+        <textarea id="pe-input" class="input" placeholder="比如：今天跟Liya聊了一下元宝胶囊的方向她说一期可以先做结构化和翻译然后二期加轻问答和通话三期再说生态联动"></textarea>
+
+        <div class="pe-bar" style="margin-top:10px;">
+          <button class="btn primary" id="run-btn">▶︎ 运行（Cmd/Ctrl + Enter）</button>
+          <button class="btn ghost" id="copy-out-btn">📋 复制结果</button>
+          <span class="meta" id="run-meta"></span>
+        </div>
+
+        <h3 style="margin-top:14px;">⑤ 输出</h3>
+        <div class="pe-result" id="pe-output">（点上方「运行」试试）</div>
+
+        <h3 style="margin-top:14px;">⑥ 实际发出的 messages</h3>
+        <textarea id="pe-final-messages" class="output" readonly placeholder="运行后这里展示真正发给 LLM 的 messages 数组"></textarea>
+      </div>
+    </div>
+
+    <footer class="app-footer">
+      💡 编辑后点「应用」即生效，「保存」会写入 localStorage（仅本浏览器）。点「↺ 恢复默认」可重置回 prompts.js。
+    </footer>
+  </div>
+
+  <!-- 设置弹窗（复用） -->
+  <div class="modal" id="settings-modal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3>⚙️ LLM 设置</h3>
+        <button class="modal-close" id="settings-close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="field">
+          <label>Provider</label>
+          <select id="cfg-provider">
+            <option value="auto">自动（默认走服务器代理，没配就降级 mock）</option>
+            <option value="byok">自带 Key（直连 OpenAI 兼容服务）</option>
+            <option value="mock">Mock（纯本地规则模拟）</option>
+          </select>
+        </div>
+        <div class="field"><label>Base URL</label><input id="cfg-base-url" type="text" placeholder="如 https://api.deepseek.com/v1" /></div>
+        <div class="field"><label>API Key</label><input id="cfg-api-key" type="password" placeholder="sk-..." />
+          <div class="field-tip">仅保存在你本地浏览器，不会上传服务器</div>
+        </div>
+        <div class="field"><label>Model</label><input id="cfg-model" type="text" placeholder="如 gpt-4o-mini / deepseek-chat" /></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn ghost" onclick="document.getElementById('settings-modal').classList.remove('show')">取消</button>
+        <button class="btn primary" id="settings-save">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="prompts.js"></script>
+  <script src="llm.js"></script>
+  <script>
+  // =========================================================
+  // PE 调试台逻辑：直接接上原有 LLM.complete，但用临时 prompts 覆盖
+  // =========================================================
+  (() => {
+    const $ = (id) => document.getElementById(id);
+    const STORAGE_KEY = 'capsule_pe_overrides_v1';
+    const toast = $('toast');
+
+    function showToast(msg, type = 'info') {
+      toast.textContent = msg;
+      toast.className = 'toast show ' + type;
+      setTimeout(() => { toast.className = 'toast'; }, 1800);
+    }
+
+    // 深拷贝默认 prompts，作为 reset 基准
+    const DEFAULT_PROMPTS = JSON.parse(JSON.stringify(window.CAPSULE_PROMPTS));
+    let currentMode = 'auto';
+
+    // ===== 渲染 mode tabs =====
+    const modeTabs = $('mode-tabs');
+    Object.entries(DEFAULT_PROMPTS.modes).forEach(([key, m]) => {
+      const btn = document.createElement('button');
+      btn.className = 'pe-tab' + (key === currentMode ? ' active' : '');
+      btn.dataset.mode = key;
+      btn.textContent = `${m.icon} ${m.label}`;
+      btn.addEventListener('click', () => switchMode(key));
+      modeTabs.appendChild(btn);
+    });
+
+    function switchMode(key) {
+      currentMode = key;
+      [...modeTabs.children].forEach(b => b.classList.toggle('active', b.dataset.mode === key));
+      $('pe-mode-label').textContent = `${window.CAPSULE_PROMPTS.modes[key].icon} ${window.CAPSULE_PROMPTS.modes[key].label}`;
+      $('pe-mode').value = window.CAPSULE_PROMPTS.modes[key].prompt;
+      $('pe-examples').value = JSON.stringify(window.CAPSULE_PROMPTS.modes[key].examples || [], null, 2);
+      checkDirty();
+    }
+
+    // ===== 初始填充 =====
+    function loadOverrides() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return null;
+        return JSON.parse(raw);
+      } catch (_) { return null; }
+    }
+    function applyOverrides(ov) {
+      if (!ov) return;
+      if (ov.system) window.CAPSULE_PROMPTS.system = ov.system;
+      if (ov.modes) {
+        Object.entries(ov.modes).forEach(([k, v]) => {
+          if (window.CAPSULE_PROMPTS.modes[k]) {
+            if (v.prompt) window.CAPSULE_PROMPTS.modes[k].prompt = v.prompt;
+            if (v.examples) window.CAPSULE_PROMPTS.modes[k].examples = v.examples;
+          }
+        });
+      }
+    }
+
+    // 启动时如果有保存的 override，先应用
+    const saved = loadOverrides();
+    if (saved) applyOverrides(saved);
+
+    $('pe-system').value = window.CAPSULE_PROMPTS.system;
+    switchMode(currentMode);
+
+    // ===== 应用编辑 =====
+    function readEditorIntoPrompts() {
+      window.CAPSULE_PROMPTS.system = $('pe-system').value;
+      const m = window.CAPSULE_PROMPTS.modes[currentMode];
+      m.prompt = $('pe-mode').value;
+      try {
+        const arr = JSON.parse($('pe-examples').value || '[]');
+        if (!Array.isArray(arr)) throw new Error('应该是 JSON 数组');
+        m.examples = arr;
+      } catch (e) {
+        showToast('Few-shot JSON 解析失败：' + e.message, 'error');
+        return false;
+      }
+      return true;
+    }
+
+    $('apply-btn').addEventListener('click', () => {
+      if (readEditorIntoPrompts()) {
+        showToast('已应用到本次会话 ✓', 'success');
+        checkDirty();
+      }
+    });
+
+    $('save-btn').addEventListener('click', () => {
+      if (!readEditorIntoPrompts()) return;
+      const ov = {
+        system: window.CAPSULE_PROMPTS.system,
+        modes: {},
+      };
+      Object.keys(window.CAPSULE_PROMPTS.modes).forEach(k => {
+        ov.modes[k] = {
+          prompt: window.CAPSULE_PROMPTS.modes[k].prompt,
+          examples: window.CAPSULE_PROMPTS.modes[k].examples,
+        };
+      });
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(ov));
+      showToast('已保存到本浏览器，下次自动加载 ✓', 'success');
+    });
+
+    $('reset-btn').addEventListener('click', () => {
+      if (!confirm('确定恢复到 prompts.js 默认版本？这会丢掉编辑器里所有改动并清空本地保存。')) return;
+      localStorage.removeItem(STORAGE_KEY);
+      window.CAPSULE_PROMPTS = JSON.parse(JSON.stringify(DEFAULT_PROMPTS));
+      $('pe-system').value = window.CAPSULE_PROMPTS.system;
+      switchMode(currentMode);
+      showToast('已恢复默认 ✓', 'success');
+    });
+
+    // 检查是否与默认一致
+    function checkDirty() {
+      const a = $('pe-system').value === DEFAULT_PROMPTS.system;
+      const b = $('pe-mode').value === DEFAULT_PROMPTS.modes[currentMode].prompt;
+      let c = true;
+      try {
+        c = JSON.stringify(JSON.parse($('pe-examples').value || '[]')) ===
+            JSON.stringify(DEFAULT_PROMPTS.modes[currentMode].examples || []);
+      } catch (_) { c = false; }
+      const meta = $('dirty-meta');
+      if (a && b && c) { meta.textContent = '已与默认一致'; meta.style.color = ''; }
+      else { meta.textContent = '⚠️ 已偏离默认，记得保存或应用'; meta.style.color = 'var(--warn)'; }
+    }
+    ['pe-system', 'pe-mode', 'pe-examples'].forEach(id => $(id).addEventListener('input', checkDirty));
+
+    // ===== 运行 =====
+    async function run() {
+      const input = $('pe-input').value.trim();
+      if (!input) { showToast('请输入测试文本', 'warn'); return; }
+      if (!readEditorIntoPrompts()) return;
+      $('run-meta').textContent = '⏳ 运行中…';
+      $('pe-output').textContent = '...';
+      const t0 = performance.now();
+      try {
+        const { text, provider, notice } = await LLM.complete(input, currentMode);
+        const dt = Math.round(performance.now() - t0);
+        $('pe-output').textContent = text;
+        $('provider-pill').textContent = provider;
+        $('run-meta').textContent = `${provider} · ${dt}ms`;
+        // 把上次发给 LLM 的 messages 拉出来展示
+        const last = window.__lastPrompt;
+        if (last) {
+          $('pe-final-messages').value = last.messages.map((m, i) =>
+            `[${i}] ${m.role}\n${m.content}`).join('\n\n---\n\n');
+        }
+        if (notice) showToast(notice, 'warn');
+      } catch (e) {
+        $('pe-output').textContent = '⚠️ 失败：' + e.message;
+        $('run-meta').textContent = '失败';
+      }
+    }
+    $('run-btn').addEventListener('click', run);
+    document.addEventListener('keydown', (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        e.preventDefault();
+        run();
+      }
+    });
+
+    $('copy-out-btn').addEventListener('click', async () => {
+      const t = $('pe-output').textContent;
+      if (!t) return;
+      try {
+        await navigator.clipboard.writeText(t);
+        showToast('已复制 ✓', 'success');
+      } catch (_) { showToast('复制失败', 'error'); }
+    });
+
+    // ===== 设置弹窗 =====
+    const settingsModal = $('settings-modal');
+    function openSettings() {
+      const cfg = LLM.getConfig();
+      const provider = cfg.provider === 'openai' ? 'byok' : (cfg.provider || 'auto');
+      $('cfg-provider').value = provider;
+      $('cfg-base-url').value = cfg.base_url || '';
+      $('cfg-api-key').value = cfg.api_key || '';
+      $('cfg-model').value = cfg.model || '';
+      settingsModal.classList.add('show');
+    }
+    $('settings-btn').addEventListener('click', openSettings);
+    $('settings-close').addEventListener('click', () => settingsModal.classList.remove('show'));
+    $('settings-save').addEventListener('click', () => {
+      LLM.saveConfig({
+        provider: $('cfg-provider').value,
+        base_url: $('cfg-base-url').value.trim(),
+        api_key: $('cfg-api-key').value.trim(),
+        model: $('cfg-model').value.trim(),
+      });
+      settingsModal.classList.remove('show');
+      showToast('设置已保存 ✓', 'success');
+    });
+    settingsModal.addEventListener('click', (e) => {
+      if (e.target === settingsModal) settingsModal.classList.remove('show');
+    });
+
+    // 默认填一个示例输入
+    $('pe-input').value = '今天跟Liya聊了一下元宝胶囊的方向她说一期可以先做结构化和翻译然后二期加轻问答和通话三期再说生态联动';
+  })();
+  </script>
+</body>
+</html>

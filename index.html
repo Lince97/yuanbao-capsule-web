@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>元宝胶囊 · 语音输入 Demo</title>
-  <meta name="theme-color" content="#0a1410" />
+  <meta name="theme-color" content="#1FA970" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -26,6 +26,7 @@
         </div>
       </div>
       <div class="header-actions">
+        <a class="icon-btn" href="pe.html" title="结构化 PE 调试台">🧪 PE 调试</a>
         <button class="icon-btn" id="prompt-btn" title="查看上次 Prompt">📜 Prompt</button>
         <button class="icon-btn" id="settings-btn" title="LLM 设置">⚙️ 设置</button>
       </div>
@@ -61,16 +62,7 @@
       </div>
     </section>
 
-    <!-- 模式选择 -->
-    <div class="card">
-      <div class="card-header">
-        <span class="card-title">整理模式</span>
-        <select id="mode-select" aria-label="选择模式"></select>
-      </div>
-      <div id="mode-desc" style="font-size:12px;color:var(--text-mute);line-height:1.6;">
-        切换模式会用当前原文重新整理一次。模式规则定义在 <code>prompts.js</code>，改完刷新即生效。
-      </div>
-    </div>
+    <!-- 模式卡片已隐去：默认 auto 自动识别意图。要调结构化策略请去 pe.html -->
 
     <!-- 原始转写 -->
     <div class="card">
@@ -96,7 +88,7 @@
     </div>
 
     <footer class="app-footer">
-      默认尝试调用服务器代理；服务端没配 LLM 就自动降级到 mock 演示 · 想用真模型但额度限制时可在「设置」里填自己的 key · PE 配置见 <code>prompts.js</code>
+      默认 <b>自动识别意图</b>（消息 / 笔记 / 邮件 / 待办）· 原始转写与整理结果同时保留 · 想调整结构化策略请打开 <a href="pe.html">🧪 PE 调试台</a>
     </footer>
   </div>
 

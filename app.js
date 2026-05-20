@@ -11,7 +11,6 @@
   const partialBox = $('partial-text');
   const rawBox = $('raw-text');
   const resultBox = $('result-text');
-  const modeSel = $('mode-select');
   const copyBtn = $('copy-btn');
   const reprocessBtn = $('reprocess-btn');
   const clearBtn = $('clear-btn');
@@ -25,6 +24,9 @@
   const promptContent = $('prompt-content');
   const toast = $('toast');
   const asrHint = $('asr-hint');
+
+  // 整理模式：固定 auto，由 LLM/mock 自动判断意图
+  const FIXED_MODE = 'auto';
 
   let isRecording = false;
 
@@ -95,9 +97,8 @@
 
   // ===== 处理文本 =====
   async function processText(rawText) {
-    const mode = modeSel.value;
     try {
-      const { text, provider, notice } = await LLM.complete(rawText, mode);
+      const { text, provider, notice } = await LLM.complete(rawText, FIXED_MODE);
       resultBox.value = text;
       const tagMap = {
         mock: '（mock · 本地规则）',
@@ -152,28 +153,6 @@
     resultBox.value = '';
     statusText.textContent = '💊 已清空';
   });
-
-  modeSel.addEventListener('change', () => {
-    updateModeDesc();
-    const raw = rawBox.value.trim();
-    if (raw) {
-      statusText.textContent = '⏳ 模式切换，重新整理…';
-      processText(raw);
-    }
-  });
-
-  // 模式说明
-  const MODE_DESC = {
-    msg: '💬 一段话，去口癖、加标点，自然口吻。适合发微信/钉钉。',
-    note: '📝 结构化提纲，自动提取主题 + 要点列表 + 待办分组。适合开会记录、灵感整理。',
-    email: '📧 主题 + 称呼 + 编号正文 + 落款，邮件骨架直接发。',
-    todo: '✅ 拆成独立任务清单，自动识别时间作为截止日。',
-    auto: '💊 自动判断意图，归到上述四类之一。',
-  };
-  function updateModeDesc() {
-    const desc = MODE_DESC[modeSel.value] || '';
-    $('mode-desc').innerHTML = `<b>${desc}</b><br><span style="color:var(--text-mute)">规则在 <code>prompts.js</code>，改完刷新即生效。</span>`;
-  }
 
   // ===== 兜底：模拟一段语音 =====
   $('mock-btn').addEventListener('click', async () => {
@@ -291,14 +270,4 @@
       if (e.target === modal) modal.classList.remove('show');
     });
   });
-
-  // ===== 模式列表初始化 =====
-  Object.entries(window.CAPSULE_PROMPTS.modes).forEach(([key, m]) => {
-    const opt = document.createElement('option');
-    opt.value = key;
-    opt.textContent = `${m.icon} ${m.label}`;
-    modeSel.appendChild(opt);
-  });
-  modeSel.value = 'note';  // 默认结构化笔记，效果最明显
-  updateModeDesc();
 })();

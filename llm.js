@@ -132,12 +132,11 @@ const LLM = (() => {
     }
 
     if (mode === 'note') {
-      // 结构化笔记：尝试主题+要点分组
+      // 结构化笔记：有序列表，待办放最后
       const segs = splitSegments(cleaned);
-      const topic = extractTopic(cleaned, segs);
 
       if (segs.length <= 1) {
-        return `## 要点\n- ${cleaned}`;
+        return `1. ${cleaned}`;
       }
 
       // 区分"动作类"（待办）和"陈述类"（要点）
@@ -154,11 +153,18 @@ const LLM = (() => {
       });
 
       const lines = [];
-      lines.push(`## ${topic || '要点'}`);
-      points.forEach(p => lines.push('- ' + p));
+      let idx = 1;
+      // preface（开头引导语）作为第 1 条
+      if (segs.__preface && segs.__preface.length >= 3 && segs.__preface.length <= 60) {
+        lines.push(`${idx}. ${segs.__preface}`);
+        idx += 1;
+      }
+      points.forEach(p => {
+        lines.push(`${idx}. ${p}`);
+        idx += 1;
+      });
       if (actions.length) {
-        if (points.length) lines.push('');
-        lines.push('## 待办');
+        if (lines.length) lines.push('');
         actions.forEach(a => lines.push('- [ ] ' + a));
       }
       return lines.join('\n');
