@@ -83,6 +83,9 @@ const LLM = (() => {
       /^帮我[，,]?/g,
       /咱们试试/g,
       /咱们来试一下/g,
+      /^重新再试一下[，,。]?/g,    // "重新再试一下"句首元指令
+      /^再试一下[，,。]?/g,
+      /^再试一次[，,。]?/g,
       /测试一下/g,
       /演示一下/g,
       /用刚才那个模式/g,
@@ -135,6 +138,12 @@ const LLM = (() => {
     // 购物 / 物品类
     const shopMatch = text.match(/(想买|要买|买点|买几样|买几个).{0,15}(东西|玩意|物品|零食|商品)?/);
     if (shopMatch) return { isShoppingLike: true, theme: '购物清单' };
+    // 想吃 / 要吃（食物类）—— 也走"无序 -"格式，主题就叫"想吃的清单"
+    const eatMatch = text.match(/(想吃|要吃|今天.{0,4}吃|晚上.{0,4}吃|中午.{0,4}吃|今天想吃)/);
+    if (eatMatch) return { isShoppingLike: true, theme: '想吃的清单' };
+    // 想看 / 要看 / 想读 / 书单
+    const watchMatch = text.match(/(想看|要看|想读|要读|今年.{0,4}读|书单|片单|追剧)/);
+    if (watchMatch) return { isShoppingLike: true, theme: '清单' };
     // 几件事
     const thingsMatch = text.match(/(今天|这周|本周|这次)?有?([一二三四五六七八九十几]+)件事/);
     if (thingsMatch) {
@@ -178,6 +187,8 @@ const LLM = (() => {
     const anchorPatterns = [
       /第[一二三四五六七八九十百0-9]+件事情?[是为，,：:]?/g,        // 第一件事情是 / 第二件事
       /第[一二三四五六七八九十百0-9]+[个件项条点种步阶段]/g,         // 第一个 / 第二步 / 第三阶段
+      // ⚠️ "第二呢" / "第三呀" / "第四嘛" —— 单位词后允许语气词
+      /第[一二三四五六七八九十百0-9]+(?=[呢呀嘛吧啊，,：:是为])/g,
       /[一二三四五六七八九十][是为][^是为，,。]/g,                  // 一是X 二是Y
       /[一二三四五六七八九十]来[，,]?/g,                            // 一来 X 二来 Y
       /其[一二三四五六七八九十]/g,                                  // 其一 / 其二
@@ -186,7 +197,7 @@ const LLM = (() => {
       /(?<![一二三四五六七八九十])[一二三四五六七八九十]月[底初]?/g, // 一月底 / 二月初
       /[1-9][\.、)）]\s*/g,                                         // 1. 1、 1)
       /[①②③④⑤⑥⑦⑧⑨⑩]/g,                                       // 圆圈数字
-      /(首先|其次|然后|接着|最后|另外|还有|再就是|再有|再一个|另一个|另一方面|一方面|此外|并且|与此同时)/g,
+      /(首先|其次|然后|接着|最后|另外|还有|再就是|再有|再一个|再来|来个|来杯|来一|整点|整一|另一个|另一方面|一方面|此外|并且|与此同时)/g,
     ];
 
     const positions = [];
@@ -308,20 +319,50 @@ const LLM = (() => {
         return out;
       }
 
+      // 主题信号识别（先于 action/point 分类，决定整体格式走向）
+      const sig = detectThemeSignal(cleaned);
+
+      // 清单类主题（购物 / 想吃 / 想看 / 书单）——直接走"- 无序"，不要套 [ ] 待办
+      if (sig.isShoppingLike) {
+        const lines = [sig.theme, ''];
+        segs.forEach(s => {
+          let cleanedItem = s
+            .replace(/^[，,。；;]+|[，,。；;]+$/g, '')
+            // 先剥头部的"是 / 的 / 了 / 啊 / 呢 / 嗯"等残留
+            .replace(/^(的|了|啊|呢|嗯|是)+/, '')
+            // 剥离每条开头的常见动词前缀（含\"我要吃 / 我需要吃\"）
+            .replace(/^我?(想|要|需要)?(吃|买|带|看|读|来杯?|来个|来一?|整点|整一)个?/, '')
+            // 兜底：单独的"我需要 / 我想 / 我要"开头（后面没接动词时）
+            .replace(/^我(想|要|需要)/, '')
+            // 锚点切分残留：开头的"杯/个/份/碗/盘"等量词
+            .replace(/^(杯|个|份|碗|盘|条|颗|片|根|块|包|袋|瓶|罐|只|串)/, '')
+            // 再清一次头部口癖残留
+            .replace(/^(的|了|啊|呢|嗯)+/, '')
+            .replace(/(帮我|麻烦你?|拜托)$/g, '')
+            .trim();
+          if (cleanedItem) lines.push('- ' + cleanedItem);
+        });
+        return lines.join('\n').trim();
+      }
+
       // 区分"动作类"（待办）和"陈述类"（要点）
+      // ⚠️ 不要把"想吃/要吃/想买/要买/我需要 X 食物"误判为待办
       const actions = [];
       const points = [];
       segs.forEach(s => {
         const trimmed = s.replace(/^[，,。；;]+|[，,。；;]+$/g, '').trim();
         if (!trimmed) return;
-        if (/(要做|得做|需要|准备|完成|发送|确认|约一下|约见|提醒|记得|跟进|联系|安排|提交|处理|回复|开会|别忘|发个)/.test(trimmed)) {
+        // 优先排除"想吃/要吃/想买/要买"开头的清单项
+        const isListItem = /^我?(想|要|需要)?(吃|买|带|看|读)/.test(trimmed);
+        const hasActionSignal = /(要做|得做|准备|完成|发送|确认|约一下|约见|提醒|记得|跟进|联系|安排|提交|处理|回复|开会|别忘|发个)/.test(trimmed)
+          || (/需要/.test(trimmed) && !isListItem);
+        if (hasActionSignal && !isListItem) {
           actions.push(trimmed);
         } else {
           points.push(trimmed);
         }
       });
 
-      const sig = detectThemeSignal(cleaned);
       const lines = [];
       // 主题作为独立首行
       if (sig.theme) { lines.push(sig.theme); lines.push(''); }
